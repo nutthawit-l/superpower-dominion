@@ -8,9 +8,10 @@
 /.ssh
 /.local
 .bash_history
-.bashrc
 /.dotnet
 /.gitconfig
+/.profile
+/.bash_logout
 
 # Claude
 .claude.json
