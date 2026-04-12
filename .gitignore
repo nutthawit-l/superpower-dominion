@@ -1,0 +1,17 @@
+# Distrobox ignore
+.sudo_as_admin_successful
+.wget-hsts
+/.cache
+/.config
+/.pki
+/.vscode
+/.ssh
+/.local
+.bash_history
+.bashrc
+/.dotnet
+/.gitconfig
+
+# Claude
+.claude.json
+/.claude
