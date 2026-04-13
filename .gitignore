@@ -12,6 +12,8 @@
 /.gitconfig
 /.profile
 /.bash_logout
+go.tar.gz
+/go
 
 # Claude
 .claude.json

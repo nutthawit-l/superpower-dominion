@@ -38,3 +38,6 @@ install-vscode:
 
 install-claude:
 	curl -fsSL https://claude.ai/install.sh | bash
+
+install-go:
+	[ ! -f "${HOME}/go.tar.gz" ] && curl -o "${HOME}/go.tar.gz" https://dl.google.com/go/go1.26.1.linux-amd64.tar.gz; sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf "${HOME}/go.tar.gz"
