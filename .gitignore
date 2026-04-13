@@ -16,3 +16,6 @@
 # Claude
 .claude.json
 /.claude
+
+# Project repo (separate, independent git repo — never tracked from dev-env)
+/dominion-grpc/
