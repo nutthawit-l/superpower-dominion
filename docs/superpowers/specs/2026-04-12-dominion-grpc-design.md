@@ -1,19 +1,11 @@
-# dominion-grpc — Design Spec (CHECKPOINT — IN PROGRESS)
+# dominion-grpc — Design Spec
 
-**Status:** Brainstorming in progress. Sections 1–5 drafted and informally approved by user. Sections 6–7 still to be presented.
+**Status:** Brainstorming complete. All sections approved by user. Next step is to invoke `superpowers:writing-plans` to produce an implementation plan.
 **Date started:** 2026-04-12
+**Date completed:** 2026-04-13
 **Author of brainstorm:** Claude (Opus 4.6) with user
+**Companion document:** `2026-04-12-dominion-grpc-section3-primer.md` — a newcomer-friendly walkthrough of Section 3 for readers new to protobuf / gRPC / Connect.
 **Spec location note:** This file lives in the dev-env repo (`/home/tie/superpower-dominion/`). It will be moved into the future project repo (`dominion-grpc/`) once that repo is created.
-
----
-
-## Resume notes (read this first when picking the session back up)
-
-- The next thing to do is **Section 6 — Bot client design**, then **Section 7 — Testing strategy + GitHub-issue organization**.
-- After Section 7, the brainstorming flow's terminal state is to invoke the `superpowers:writing-plans` skill, which produces an implementation plan that becomes the GitHub issues the user originally asked about.
-- TaskList items #1–#4 in the Claude Code session track the remaining brainstorming + transition steps.
-- The user is **new to protobuf and Connect**; a Tier 1/2/3 reading list was given (Proto3 guide, Buf quickstart, Connect-Go getting started, Dominion rulebook). The user may have done some of this reading before resuming.
-- The user has explicitly chosen all the following decisions; do not re-litigate them on resume.
 
 ---
 
@@ -566,40 +558,643 @@ Forward-compat with future Dominion sets (durations, tokens, VP chips, exile, et
 
 ---
 
-## Section 6 — Bot client design (TO DO ON RESUME)
+## Section 6 — Bot client design
 
-To cover when brainstorming resumes:
+The bot is the lynchpin of Phase 1a. It is both **the test harness** that proves the proto contract works end-to-end AND **the AI opponent** that single-player mode ships with. Designing it well means the same code that runs inside `go test` runs unchanged when the project ships.
 
-- The bot as a Connect client (uses `gen/go/` typed client, identical surface to a future React client)
-- Strategy interface — `PickAction(state) Action` and `Resolve(decision, state) Answer`
-- Built-in strategies for Phase 1a:
-  - **BigMoney** — buy Province if ≥8 coins, Gold ≥6, Silver ≥3, else nothing; never play actions
-  - **SmithyBM** — same as BigMoney but buy Smithy on early turns and play it during Action phase
-- How bots are wired into integration tests (in-process server, two bot clients, full game in milliseconds)
-- Whether to also expose bots over the network (e.g., spectatable bot-only games via the same Connect API)
+### 6.1 The bot is "just a Connect client"
 
-## Section 7 — Testing strategy + GitHub-issue organization (TO DO ON RESUME)
+Directory layout:
 
-To cover when brainstorming resumes:
+```
+cmd/bot/main.go               # CLI entry point: connect to a server, play a game
+internal/bot/
+   client.go                  # thin wrapper around the generated Connect client
+   state.go                   # ClientState + Apply(event) reducer
+   strategy.go                # Strategy interface
+   bot.go                     # Run(ctx, client, gameID, playerIdx, strategy) loop
+   bigmoney.go                # BigMoney strategy
+   smithy_bm.go               # Smithy + BigMoney strategy
+```
 
-- **Engine unit tests** — table-driven, one test file per card, covers happy path + edge cases (empty deck, empty supply, decision-pending guards)
-- **Integration tests** — `bot-vs-bot` games at the Connect layer, in-process server, runs N=1000 games per CI run with random supplies and seeds; fails on any panic, illegal state, or non-terminating game
-- **Replay tests** — known-buggy game seed + action log captured as a regression fixture; replay must produce identical outcome
-- **Property tests** — invariants like "total cards in game is conserved" (sum of all hands+decks+discards+inplay+supply+trash always equals starting card count)
-- **Linting** — `buf lint`, `buf breaking` against main branch, `golangci-lint` on Go code
-- **Pre-commit / CI** — `buf generate` is committed (or verified-clean in CI), tests run on every push
-- **GitHub-issue organization:**
-  - **Milestones** map to phases and tiers (`Phase 1a — Tier 0 Basics`, `Phase 1a — Tier 1 Stat Boosts`, …)
-  - **Labels:** `area:engine`, `area:proto`, `area:server`, `area:bot`, `area:client-react`, `area:tooling`, `kind:card`, `kind:engine-primitive`, `kind:test`, `kind:infra`
-  - **Issue templates** for "new card" and "new engine primitive" so each PR is small, focused, and consistent
-  - **Epic issues** for cross-cutting work (the proto contract, the engine package, the bot strategy framework)
+**Critical boundary rule:** `internal/bot/` imports `gen/go/dominion/v1` (the generated Connect client) and `connectrpc.com/connect`. It does **NOT** import `internal/engine/`. If the bot ever needed engine internals to function, the contract would have a hole — the bot exists specifically to prove it does not. A future TypeScript React client will live under exactly the same constraint.
 
-After Section 7 is presented and approved, the brainstorming flow's terminal action is to invoke the `superpowers:writing-plans` skill to produce a step-by-step implementation plan. That plan becomes the actual GitHub issues the user originally asked about.
+### 6.2 Local state from the event stream
+
+The bot keeps its own client-side reduction of the game. This is the same shape the React store will eventually take — a reducer over events — so building it for the bot first means the reducer logic is proven before the frontend exists.
+
+```go
+package bot
+
+type ClientState struct {
+    Me              int                       // my player index in this game
+    LastSeq         uint64                    // last event sequence applied
+    Snapshot        *pb.GameStateSnapshot     // last full snapshot received
+    Log             []*pb.GameEvent           // events applied since the snapshot
+    Phase           pb.Phase
+    Turn            int
+    CurrentPlayer   int
+    PendingDecision *pb.Decision              // nil = no decision pending
+    DecidingPlayer  int
+    Ended           bool
+    Winners         []int
+}
+
+func (cs *ClientState) Apply(ev *pb.GameEvent) error {
+    if cs.LastSeq != 0 && ev.Sequence != cs.LastSeq+1 {
+        return ErrSequenceGap                 // caller re-subscribes for fresh snapshot
+    }
+    cs.LastSeq = ev.Sequence
+
+    switch k := ev.Kind.(type) {
+    case *pb.GameEvent_Snapshot:
+        cs.Snapshot = k.Snapshot
+        cs.Log = cs.Log[:0]
+        cs.Phase = k.Snapshot.Phase
+        cs.Turn = int(k.Snapshot.Turn)
+        cs.CurrentPlayer = int(k.Snapshot.CurrentPlayer)
+        cs.PendingDecision = k.Snapshot.PendingDecision
+    case *pb.GameEvent_PhaseChanged:
+        cs.Phase = k.PhaseChanged.NewPhase
+    case *pb.GameEvent_TurnStarted:
+        cs.Turn = int(k.TurnStarted.Turn)
+        cs.CurrentPlayer = int(k.TurnStarted.PlayerIdx)
+        cs.PendingDecision = nil
+    case *pb.GameEvent_Decision:
+        cs.PendingDecision = k.Decision.Decision
+        cs.DecidingPlayer = int(k.Decision.PlayerIdx)
+    case *pb.GameEvent_ActionApplied:
+        // apply derived view updates (hand/discard/inplay/coins/buys/actions)
+    case *pb.GameEvent_Ended:
+        cs.Ended = true
+        cs.Winners = intsFrom(k.Ended.Winners)
+    }
+    cs.Log = append(cs.Log, ev)
+    return nil
+}
+
+func (cs *ClientState) IsMyTurn() bool { return cs.CurrentPlayer == cs.Me && !cs.Ended }
+```
+
+Two deliberate properties:
+
+- **Pure reduction.** `Apply` only mutates `cs`; no I/O, no network, no time.
+- **Gap detection built in.** If a sequence number is skipped, `Apply` returns `ErrSequenceGap` and the loop above it re-subscribes. No recovery logic lives inside the reducer itself.
+
+### 6.3 The Strategy interface
+
+Two methods, symmetric to the two states a player can be in (free turn vs. mid-decision):
+
+```go
+package bot
+
+type Strategy interface {
+    Name() string
+
+    // PickAction is called when it's our turn AND no decision is pending.
+    // Returns the next Action to submit, or nil to signal "nothing more
+    // to do this phase — the loop should send EndPhase."
+    PickAction(cs *ClientState) *pb.Action
+
+    // Resolve is called when a decision is pending AND we are the
+    // deciding player. Must reference the current decision's ID.
+    Resolve(cs *ClientState, d *pb.Decision) *pb.ResolveDecision
+}
+```
+
+Key choices:
+
+1. **Strategies are pure.** Read `ClientState`, return a proto message, never mutate, never do I/O. That makes them unit-testable without a server — hand them a fake `ClientState` and assert what they pick.
+2. **`Name()` is for logs, metrics, and CLI flags.** `--strategy bigmoney` looks up by name.
+3. **`nil` from `PickAction` means "end the phase."** It is the one escape hatch so strategies do not have to construct `EndPhaseAction` explicitly every time they are done.
+4. **`Resolve` always echoes `d.Id`.** The returned `ResolveDecision` carries the original ID back so the server can reject stale answers.
+
+### 6.4 The bot event loop
+
+```go
+func Run(ctx context.Context, c *Client, gameID string, me int, strat Strategy) error {
+    cs := &ClientState{Me: me}
+
+resubscribe:
+    stream, err := c.StreamGameEvents(ctx, gameID)
+    if err != nil {
+        return err
+    }
+
+    for stream.Receive() {
+        ev := stream.Msg()
+        if err := cs.Apply(ev); err != nil {
+            if errors.Is(err, ErrSequenceGap) {
+                stream.Close()
+                goto resubscribe               // fresh snapshot re-baselines us
+            }
+            return err
+        }
+        if cs.Ended {
+            return nil
+        }
+
+        switch {
+        case cs.PendingDecision != nil && cs.DecidingPlayer == cs.Me:
+            resp := strat.Resolve(cs, cs.PendingDecision)
+            if err := c.SubmitResolve(ctx, gameID, resp); err != nil {
+                return err
+            }
+
+        case cs.IsMyTurn() && cs.PendingDecision == nil:
+            action := strat.PickAction(cs)
+            if action == nil {
+                action = endPhase()             // strategy is done; end phase
+            }
+            if err := c.SubmitAction(ctx, gameID, action); err != nil {
+                return err
+            }
+        }
+    }
+    return stream.Err()
+}
+```
+
+Three properties worth calling out:
+
+1. **No polling.** The loop is woken by stream events only — never by sleeps or timers.
+2. **Reconnect is built in.** Sequence-gap → close stream → resubscribe → receive fresh snapshot → resume. The same pattern protects a real client from dropped frames in Phase 2.
+3. **Two-state decision tree.** The entire "what should I do now?" logic is two cases: my-turn-no-decision vs. decision-pending-for-me. New card types never add new branches here — they only add new prompt cases inside `Resolve`.
+
+### 6.5 BigMoney (the canary strategy)
+
+```go
+type BigMoney struct{}
+
+func (BigMoney) Name() string { return "bigmoney" }
+
+func (BigMoney) PickAction(cs *ClientState) *pb.Action {
+    me := cs.MyPlayer()
+
+    switch cs.Phase {
+    case pb.Phase_PHASE_ACTION:
+        return nil                              // BigMoney never plays actions
+
+    case pb.Phase_PHASE_BUY:
+        for _, c := range me.Hand {
+            if isTreasure(c) {
+                return playCard(c)              // auto-play all treasures first
+            }
+        }
+        switch {
+        case me.Coins >= 8: return buyCard("province")
+        case me.Coins >= 6: return buyCard("gold")
+        case me.Coins >= 3: return buyCard("silver")
+        }
+        return nil                              // end phase
+    }
+    return nil
+}
+
+func (BigMoney) Resolve(cs *ClientState, d *pb.Decision) *pb.ResolveDecision {
+    // BigMoney never buys action cards, so in a pure-BigMoney game it
+    // should never be asked a question. If one arrives anyway (e.g., an
+    // opponent's attack forces a decision), return the minimum legal
+    // answer so the game does not deadlock. NOT "play well under attack"
+    // — that is a Phase 3 concern.
+    return safeRefusal(d)
+}
+```
+
+About 50 lines including helpers. It is the "hello world" of Dominion AI and exists primarily to prove the engine is correct — BigMoney converging on Provinces is a known result, so if the engine is wrong, BigMoney's win rate against itself will show it.
+
+### 6.6 SmithyBM (the second-tier strategy)
+
+Same shape as BigMoney, plus:
+
+- **Action phase:** if a Smithy is in hand and `Actions >= 1`, play it.
+- **Buy phase:** on turns 3 and 4, prefer Smithy over Silver. After turn 4, revert to BigMoney's economy rules.
+
+Roughly 80 lines. The important point is not the strategy itself — it is that **adding a new strategy is one new file in `internal/bot/`**, zero engine changes, zero proto changes, zero service-layer changes. Every future strategy fits this shape.
+
+### 6.7 How bots wire into integration tests
+
+The payoff, and the reason the bot is designed as a first-class client instead of a stub:
+
+```go
+func TestBotVsBot_BigMoney_Smithy(t *testing.T) {
+    // 1. Spin up the real Connect server in-process.
+    srv := newTestServer(t)
+    defer srv.Close()
+
+    // 2. Two bot clients hit srv.URL via real HTTP (loopback).
+    a := bot.NewClient(srv.URL)
+    b := bot.NewClient(srv.URL)
+
+    // 3. Create a game with two bot players and a fixed seed.
+    game, err := a.CreateGame(ctx, []string{"bigmoney", "smithy_bm"}, /*seed*/ 42)
+    require.NoError(t, err)
+
+    // 4. Run both bots concurrently.
+    errg, ctx := errgroup.WithContext(ctx)
+    errg.Go(func() error { return bot.Run(ctx, a, game.Id, 0, bot.BigMoney{}) })
+    errg.Go(func() error { return bot.Run(ctx, b, game.Id, 1, bot.SmithyBM{}) })
+    require.NoError(t, errg.Wait())
+
+    // 5. Assert the game terminated correctly.
+    final := mustFetchFinal(t, a, game.Id)
+    require.True(t, final.Ended)
+    require.Len(t, final.Winners, 1)
+}
+```
+
+What this exercises end-to-end in a single test:
+
+- **Transport layer:** real Connect over loopback HTTP, real protobuf marshalling.
+- **Service layer:** request validation, game lookup, decision routing, error translation.
+- **Engine layer:** every card effect that actually gets played.
+- **Bot library:** event reduction, strategy evaluation, decision handling, reconnect path.
+- **Determinism:** fixed seed + fixed strategies = identical outcome every run.
+
+The plan is to run 1000 such games per CI push with random seeds and random kingdom subsets. Section 7A.5 details the sweep.
+
+### 6.8 Bot CLI is a first-class deliverable (Option A)
+
+The bot library is wrapped by `cmd/bot/main.go` as a documented, supported CLI:
+
+```
+dominion-bot \
+  --server http://localhost:8080 \
+  --game abc123 \
+  --as-player 1 \
+  --strategy bigmoney
+```
+
+This is promoted in the README and is the intended workflow for manual Phase 1b acceptance testing: run the server, attach a bot to one seat via CLI, open the browser on the other seat, play an actual game against the bot end-to-end. The CLI already has to exist for tests, so first-class support costs only documentation and a few extra flags.
+
+## Section 7 — Testing strategy + GitHub-issue organization
+
+Section 7 has two halves. **7A** is how we know the code is correct (the test pyramid: unit → property → service → integration → replay). **7B** is how the work is broken into trackable GitHub units.
+
+### 7A — Testing strategy
+
+#### 7A.1 The five test tiers
+
+| Tier | What it tests | Where it lives | Run frequency |
+|---|---|---|---|
+| **1. Engine unit tests** | Single card effects, primitives, phase transitions | `internal/engine/cards/*_test.go` and `internal/engine/*_test.go` | Every save / every push |
+| **2. Engine property tests** | Invariants that hold across any legal action sequence | `internal/engine/properties_test.go` | Every push |
+| **3. Service-layer tests** | Proto ↔ engine translation, Connect error codes | `internal/service/*_test.go` | Every push |
+| **4. Bot-vs-bot integration tests** | Whole stack (proto + transport + service + engine + bot), 1000 games per run | `internal/bot/integration_test.go` | Every push |
+| **5. Replay regression tests** | Captured buggy `(seed, action_log)` fixtures replayed to a known outcome | `testdata/replays/*.json` consumed by a single parameterized test | Every push |
+
+Each tier catches bugs the tier below misses. Unit tests catch "Smithy drew the wrong number of cards." Property tests catch "somewhere in the engine, cards get duplicated." Service tests catch "we forgot to translate decision answers." Integration tests catch "the full loop deadlocks under Militia." Replay tests catch "we fixed that last month and just re-introduced it."
+
+#### 7A.2 Engine unit tests — the foundation
+
+Pattern: **table-driven, one file per card, cover happy path + every guard.** Go's standard `testing` package plus `testify/require` for assertions — no other test framework.
+
+```go
+func TestSmithy_OnPlay_DrawsThreeCards(t *testing.T) {
+    cases := []struct {
+        name     string
+        deckSize int
+        discard  int
+        want     int
+    }{
+        {"full deck", 10, 0, 3},
+        {"empty deck, discard has enough", 0, 5, 3},
+        {"deck + discard together have fewer than 3", 1, 1, 2},
+        {"nothing to draw", 0, 0, 0},
+    }
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            s := newTestState(tc.deckSize, tc.discard)
+            before := len(s.Players[0].Hand)
+            _, events, err := engine.Apply(s, engine.PlayCard{PlayerIdx: 0, Card: "smithy"})
+            require.NoError(t, err)
+            require.Equal(t, before+tc.want, len(s.Players[0].Hand))
+            require.Contains(t, events, engine.CardDrawnEvent{Count: tc.want})
+        })
+    }
+}
+```
+
+**Every card's test file must cover:** happy path, empty-deck edge, decision-pending guard (if the card sets one), resource guards (`Actions == 0`, `Buys == 0` etc.), end-of-game guard. The `new-card.md` issue template (Section 7B.3) makes this a checklist.
+
+Every *primitive* (`DrawCards`, `TrashFromHand`, `GainCard`, …) gets its own unit test file. Primitives are the most reused code in the engine; a bug in `GainCard` affects every gain in the game.
+
+#### 7A.3 Engine property tests — the "something is wrong somewhere" detector
+
+The engine has a small number of **global invariants** that should hold after any legal action, regardless of which cards are in play. Cheap to express, extremely effective at catching bugs unit tests miss.
+
+```go
+func TestProperty_CardConservation(t *testing.T) {
+    for i := 0; i < 500; i++ {
+        seed := int64(i)
+        state := randomStartState(seed)
+        startTotal := totalCards(state)
+
+        final := playRandomGame(t, state, /*maxActions*/ 10000, seed)
+
+        require.Equal(t, startTotal, totalCards(final),
+            "card conservation violated at seed %d", seed)
+    }
+}
+
+func totalCards(s engine.GameState) int {
+    total := len(s.Trash)
+    for _, p := range s.Players {
+        total += len(p.Hand) + len(p.Deck) + len(p.Discard) + len(p.InPlay)
+    }
+    for _, n := range s.Supply.Piles {
+        total += n
+    }
+    return total
+}
+```
+
+**Invariants to check as properties:**
+
+1. **Card conservation** — sum of all piles (hands + decks + discards + in-play + trash + supply) equals the starting card count. The single most important invariant; a violation means something either duplicated or dropped a card.
+2. **Resource non-negativity** — `Actions`, `Buys`, `Coins` never go negative.
+3. **Phase ordering** — a game never leaves `PhaseCleanup` for `PhaseAction` of the *same* player; cleanup always advances.
+4. **Decision resolution** — if `PendingDecision` is non-nil at step N, step N+1 either resolves it (pending becomes nil) or returns an error (pending unchanged). No state where pending flips to a different decision without resolution.
+5. **Game termination** — after a bounded number of steps, every random game either is still playable or has ended. No infinite loops, no stuck states.
+
+Seeded deterministically (0..500) so failures are reproducible.
+
+#### 7A.4 Service-layer tests — the translation boundary
+
+Thin, targeted. The service layer's job is protobuf ↔ engine translation, so the tests look like:
+
+```go
+func TestGameService_SubmitAction_PlayCard(t *testing.T) {
+    svc := service.New(store.NewMemory(), engine.NewDefaultRegistry())
+
+    game, _ := svc.CreateGame(ctx, req(&pb.CreateGameRequest{
+        Players: []string{"human", "human"}, Seed: 42,
+    }))
+
+    _, err := svc.SubmitAction(ctx, req(&pb.SubmitActionRequest{
+        GameId: game.Id,
+        Action: &pb.Action{Kind: &pb.Action_PlayCard{PlayCard: &pb.PlayCardAction{
+            PlayerIdx: 0, CardId: "smithy",
+        }}},
+    }))
+
+    require.NoError(t, err)
+    state := svc.Debug_GetState(game.Id)
+    require.Contains(t, state.Players[0].InPlay, engine.CardID("smithy"))
+}
+
+func TestGameService_SubmitAction_IllegalReturnsConnectError(t *testing.T) {
+    svc, game := setupGameWithNoActionsLeft(t)
+
+    _, err := svc.SubmitAction(ctx, req(&pb.SubmitActionRequest{
+        GameId: game.Id,
+        Action: playCardAction(0, "smithy"),
+    }))
+
+    var connectErr *connect.Error
+    require.ErrorAs(t, err, &connectErr)
+    require.Equal(t, connect.CodeFailedPrecondition, connectErr.Code())
+}
+```
+
+Two kinds of test:
+- **Happy-path translation:** a valid proto request produces the right engine state change.
+- **Error translation:** engine errors become the right Connect error codes. `FailedPrecondition` for illegal moves, `NotFound` for unknown game IDs, `InvalidArgument` for malformed protobuf.
+
+Service tests are NOT where we exhaustively test card behavior — that is the engine unit tests' job. They only verify the translation is faithful.
+
+#### 7A.5 Bot-vs-bot integration tests — the whole-stack hammer
+
+The test shape is already shown in Section 6.7. Here it is parameterized across thousands of scenarios:
+
+```go
+func TestBotVsBot_RandomKingdoms(t *testing.T) {
+    if testing.Short() {
+        t.Skip("integration sweep is slow; use go test -short to skip")
+    }
+
+    const gamesPerRun = 1000
+    srv := newTestServer(t)
+    defer srv.Close()
+
+    for i := 0; i < gamesPerRun; i++ {
+        seed := int64(i)
+        kingdom := randomKingdomSubset(seed, 10)     // 10 of 26 Base cards
+        strategies := randomStrategyPair(seed)       // bigmoney vs smithy_bm, etc.
+
+        t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+            runOneGame(t, srv.URL, seed, kingdom, strategies)
+        })
+    }
+}
+```
+
+**Failure conditions:** any panic, any Connect error at all (the deterministic strategies should never submit illegal moves — a Connect error means either a strategy bug or a server bug, both of which should fail the test), game does not terminate within `maxTurns` (e.g., 100 turns — real games finish in 15–20), or final state violates any conservation invariant.
+
+**Runtime budget:** 1000 games in under 60 seconds on CI. Engine is fast, server is in-process, realistic numbers are closer to 10–30 seconds. If a future change pushes past 60 seconds, drop to 100 games on PRs and run 1000 nightly.
+
+**CI configuration:**
+- `go test ./...` runs unit + property + service + integration + replay tests together.
+- `go test -short ./...` skips the 1000-game sweep for local iterative development.
+- A dedicated GitHub Actions workflow runs `go test ./...` on every push and every PR.
+
+#### 7A.6 Replay regression tests
+
+When a bug is found (in the wild or in a 1000-game sweep), the fix protocol is:
+
+1. Capture the failing game as `(seed, kingdom_cards, action_log)` — the engine already holds all three.
+2. Save it as a JSON fixture under `testdata/replays/<short-description>.json`.
+3. A single parameterized test walks `testdata/replays/` and replays each fixture.
+
+```go
+func TestReplay_RegressionFixtures(t *testing.T) {
+    entries, _ := filepath.Glob("testdata/replays/*.json")
+    for _, path := range entries {
+        t.Run(filepath.Base(path), func(t *testing.T) {
+            replay := loadReplay(t, path)
+            final := replayGame(t, replay.Seed, replay.Kingdom, replay.Actions)
+            require.Equal(t, replay.ExpectedFinal, finalSummary(final))
+        })
+    }
+}
+```
+
+Cheap and invaluable. Every bug that is fixed becomes a permanent regression test **automatically**, without writing a new test by hand each time. The fixture captures exactly the thing that broke. Determinism is what makes this possible — because the engine's only source of randomness is `state.rng` seeded from `state.Seed`, `(seed, actions)` is a complete description of a game.
+
+**Fixture format:** JSON. One file per replay. Chosen over generated Go struct literals because JSON files are diffable in PRs and editable by hand if a fix requires updating the expected outcome.
+
+#### 7A.7 Linting and pre-commit
+
+- **`buf lint`** — enforces proto style (field naming, message naming, package layout). Runs in CI.
+- **`buf breaking`** — compares the proto schema against `main` and fails the build on any field-number change, field removal, or type change. The guardrail against accidental backwards-incompatible schema changes.
+- **`golangci-lint`** — standard Go linting. A vetted preset: `gofmt`, `govet`, `staticcheck`, `errcheck`, `ineffassign`, `unused`. Nothing more.
+- **`buf generate` result is committed to git.** Generated code (`gen/go/`) lives in the repo. CI verifies the committed generated code matches what `buf generate` would produce right now — if they diverge, the build fails with "you forgot to regenerate after touching proto/."
+
+**Rationale for committing generated code:** `go build ./...` works out of a fresh checkout with nothing but a Go toolchain. Contributors do not need `buf` installed just to compile. Only people who modify `.proto` files need `buf`.
+
+### 7B — GitHub-issue organization
+
+Each tier in Section 5 is a chunk of work that slots cleanly into GitHub's milestone/issue model.
+
+#### 7B.1 Milestone structure
+
+Milestones are **phases × tiers**. Each is a shippable checkpoint.
+
+```
+Phase 1a / Tier 0 — Basics                   (6 cards + engine skeleton)
+Phase 1a / Tier 1 — Pure stat-boost actions  (6 cards)
+Phase 1a / Tier 2 — Simple decisions         (10 cards, 6 prompt types)
+Phase 1a / Tier 3 — Attacks + reactions      (5 cards, reaction system)
+Phase 1a / Tier 4 — Complex multi-step       (3 cards)
+Phase 1a / Tier 5 — Special hooks            (2 cards)
+Phase 1a / Infrastructure                    (proto, server, bot loop, CI)
+Phase 1b / Frontend MVP                      (React app)
+Phase 2  / Online multiplayer                (placeholder — detailed later)
+Phase 3  / Polish + smarter AI               (placeholder — detailed later)
+```
+
+Milestones are ordered. "Done" for a milestone means every issue in it is closed AND the integration sweep passes with those cards enabled.
+
+#### 7B.2 Labels
+
+Two label taxonomies that compose; a typical issue has exactly one `area:*` and one `kind:*`.
+
+**`area:*` — which part of the codebase is affected**
+- `area:proto` — `.proto` files or generated code
+- `area:engine` — `internal/engine/`
+- `area:server` — `internal/service/`, `cmd/server/`
+- `area:bot` — `internal/bot/`, `cmd/bot/`
+- `area:client-react` — `clients/web-react/` (Phase 1b and later)
+- `area:tooling` — buf config, golangci-lint config, Makefile
+- `area:ci` — GitHub Actions workflows
+
+**`kind:*` — what kind of work it is**
+- `kind:card` — implementing a single Dominion card
+- `kind:primitive` — adding or modifying an engine primitive (DrawCards etc.)
+- `kind:test` — adding tests not tied to a card (property tests, integration sweeps)
+- `kind:epic` — tracking issue for a cross-cutting initiative
+- `kind:bug` — something broke
+- `kind:chore` — infrastructure, config, docs
+- `kind:design` — needs design discussion before implementation
+
+#### 7B.3 Issue templates
+
+Three templates live under `.github/ISSUE_TEMPLATE/` and cover ~90% of issues.
+
+**Template 1 — `new-card.md`** (for every Tier 0–5 card)
+
+```markdown
+## Card: <Name>
+
+**Tier:** <0-5>
+**Cost:** <int>
+**Types:** <Action/Treasure/Victory/Attack/Reaction>
+
+### Rulebook text
+> <copy verbatim from the 2nd edition rulebook>
+
+### Primitives used
+- [ ] DrawCards
+- [ ] AddActions
+- [ ] ...
+
+### Prompts used (if any)
+- [ ] DiscardFromHandPrompt
+- [ ] ...
+
+### Unit tests required
+- [ ] Happy path
+- [ ] Empty deck / empty discard
+- [ ] Decision-pending guard (if applicable)
+- [ ] Resource guards (Actions/Buys/Coins)
+- [ ] Game-ended guard
+
+### Definition of done
+- [ ] Card file added to `internal/engine/cards/`
+- [ ] Registered via `init()` → `Register()`
+- [ ] All unit tests pass
+- [ ] Included in the Tier N integration sweep
+- [ ] No new engine primitives needed (or: new primitive issue linked)
+```
+
+**Template 2 — `new-primitive.md`** (for engine plumbing)
+
+```markdown
+## Primitive: <Name>
+
+**Signature:** `func <Name>(...) ...`
+**Used by:** <list of cards that will need this>
+
+### Semantics
+<one paragraph — what it does to state>
+
+### Edge cases
+<empty input? player with 0 cards? interaction with pending decision?>
+
+### Unit tests required
+- [ ] Happy path
+- [ ] Empty / degenerate inputs
+- [ ] Interaction with decisions (if applicable)
+```
+
+**Template 3 — `epic.md`** (cross-cutting tracking issues)
+
+```markdown
+## Epic: <Title>
+
+**Phase/Tier:** <>
+**Area:** <>
+
+### Goal
+<one paragraph>
+
+### Scope (in)
+- <bullet>
+
+### Scope (out)
+- <bullet>
+
+### Child issues
+- [ ] #NN
+
+### Exit criteria
+- <measurable>
+```
+
+#### 7B.4 From milestone to PR
+
+1. **Open the milestone.** Create one epic issue per milestone theme (e.g., "Tier 1 — Stat-boost actions"). Create one card issue per card, linked as children of the epic.
+2. **Work the issues in dependency order.** Tier 0 before Tier 1 before Tier 2. Within a tier, primitive-dependent cards before primitive dependents.
+3. **One card = one PR.** The PR closes its card issue on merge. The PR must ship with its unit tests green and must not break any existing integration-sweep test. (New cards are often excluded from the sweep until their whole tier is done — the sweep's kingdom selection can be gated on what is implemented.)
+4. **Milestone closes** when every child issue is closed AND the milestone's integration sweep is green with the milestone's cards enabled.
+
+One card is a unit of work around 200 lines and one focused hour once the primitives exist — small, reviewable, and individually testable.
+
+#### 7B.5 Initial issue population
+
+At the moment `dominion-grpc/` is initialized, these issues should exist up front so work can start immediately:
+
+- **1 epic per milestone** (~10 epics)
+- **1 issue per card** (26 kingdom cards + 7 basics = 33 card issues)
+- **1 issue per engine primitive** (~15 primitives)
+- **1 epic for "proto contract v1"** (Tier 0 proto + generated code + buf config)
+- **1 epic for "Connect server skeleton"** (cmd/server/main.go + service layer shell)
+- **1 epic for "bot library + event loop"**
+- **1 epic for "integration sweep harness"**
+- **1 epic for "CI pipeline"** (golangci-lint + buf lint + buf breaking + test workflows)
+
+Total ~65 issues at project birth. The `superpowers:writing-plans` skill (next step after this brainstorm) is what actually drafts the text of each one.
 
 ---
 
 ## Open questions (none currently blocking)
 
-- Exact bot strategy beyond Big Money + Smithy-BM — punted to Phase 3 ("smarter AI").
-- Whether the dev-env repo and the project repo share the same name on GitHub or differ — leaning toward project = `dominion-grpc` on GitHub, dev-env stays as a personal/private setup repo. To be confirmed.
-- Logging format and verbosity in the engine — to be decided during implementation; not architectural.
+- Exact bot strategy beyond BigMoney + SmithyBM — punted to Phase 3 ("smarter AI").
+- Whether the dev-env repo and the project repo share the same name on GitHub or differ — leaning toward project = `dominion-grpc` on GitHub, dev-env stays as a personal/private setup repo. To be confirmed when the project repo is created.
+- Logging format and verbosity in the engine — decided during implementation; not architectural.
+
+---
+
+## Next step
+
+Invoke `superpowers:writing-plans` against this spec to produce the step-by-step implementation plan, which becomes the initial GitHub issue set described in Section 7B.5.
