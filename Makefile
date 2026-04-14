@@ -2,7 +2,7 @@ IMAGE_NAME = superpower-dominion
 CONTAINER_NAME = superpower-dominion
 PORT = 5173
 
-build:
+build: copy-ssh
 	distrobox assemble create
 
 clean:
@@ -15,6 +15,9 @@ enter:
 
 enter-v:
 	distrobox enter -v $(CONTAINER_NAME)
+
+copy-ssh:
+	cp -va ~/.ssh .
 
 # The following commands must be executed within a Distrobox container
 
