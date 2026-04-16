@@ -8,6 +8,30 @@
       "mode": "test",
       "program": "${workspaceFolder}/dominion-grpc/internal/engine",
       "args": ["-test.run", "TestApply", "-test.v"]
-    }
+    },
+    {
+      "name": "Debug: TestMemory",
+      "type": "go",
+      "request": "launch",
+      "mode": "test",
+      "program": "${workspaceFolder}/dominion-grpc/internal/store",
+      "args": ["-test.run", "TestMemory", "-test.v"]
+    },
+    {
+      "name": "Debug: TestActionFromProto",
+      "type": "go",
+      "request": "launch",
+      "mode": "test",
+      "program": "${workspaceFolder}/dominion-grpc/internal/service",
+      "args": ["-test.run", "TestActionFromProto", "-test.v"]
+    },
+    {
+      "name": "Debug: TestSnapshotFromState",
+      "type": "go",
+      "request": "launch",
+      "mode": "test",
+      "program": "${workspaceFolder}/dominion-grpc/internal/service",
+      "args": ["-test.run", "TestMemory", "-test.v"]
+    },
   ]
 }
