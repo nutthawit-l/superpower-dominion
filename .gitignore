@@ -4,7 +4,8 @@
 /.cache
 /.config
 /.pki
-/.vscode
+/.vscode/*
+!/.vscode/launch.json
 /.ssh
 /.local
 .bash_history
