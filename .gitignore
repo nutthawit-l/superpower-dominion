@@ -1,0 +1,24 @@
+# Distrobox ignore
+.sudo_as_admin_successful
+.wget-hsts
+/.cache
+/.config
+/.pki
+/.vscode/*
+!/.vscode/launch.json
+/.ssh
+/.local
+.bash_history
+/.dotnet
+/.gitconfig
+/.profile
+/.bash_logout
+go.tar.gz
+/go
+
+# Claude
+.claude.json
+/.claude
+
+# Project repo (separate, independent git repo — never tracked from dev-env)
+/dominion-grpc/
