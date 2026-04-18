@@ -41,5 +41,14 @@
       "program": "${workspaceFolder}/dominion-grpc/internal/service",
       "args": ["-test.run", "TestGameService", "-test.v"]
     },
+    {
+      "name": "Debug: bot (player 0, create game)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/dominion-grpc/cmd/bot",
+      "args": ["-server", "http://localhost:8080", "-as-player", "0", "-create", "-seed", "42"],
+      "cwd": "${workspaceFolder}/dominion-grpc"
+    }
   ]
 }
