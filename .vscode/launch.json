@@ -2,12 +2,19 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug: TestApply",
+      "name": "Debug: primitives_test.go (all tests)",
       "type": "go",
       "request": "launch",
       "mode": "test",
       "program": "${workspaceFolder}/dominion-grpc/internal/engine",
-      "args": ["-test.run", "TestApply", "-test.v"]
+      "args": ["-test.run", "TestDrawCards|TestDiscardFromHand|TestAddCoins|TestAddBuys|TestAddActions|TestGainCard|TestEachOtherPlayer", "-test.v"],
+      "buildFlags": ["-gcflags", "all=-N -l"],
+      "substitutePath": [
+        {
+          "from": "${workspaceFolder}/dominion-grpc/.worktrees/tier1",
+          "to": "${workspaceFolder}/dominion-grpc"
+        }
+      ]
     },
     {
       "name": "Debug: TestMemory",
@@ -40,6 +47,14 @@
       "mode": "test",
       "program": "${workspaceFolder}/dominion-grpc/internal/service",
       "args": ["-test.run", "TestGameService", "-test.v"]
+    },
+    {
+      "name": "Debug: TestEachOtherPlayer",
+      "type": "go",
+      "request": "launch",
+      "mode": "test",
+      "program": "${workspaceFolder}/dominion-grpc/internal/engine",
+      "args": ["-test.run", "TestEachOtherPlayer", "-test.v"]
     },
     {
       "name": "Debug: bot (player 0, create game)",
