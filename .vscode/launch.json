@@ -8,13 +8,13 @@
       "mode": "test",
       "program": "${workspaceFolder}/dominion-grpc/internal/engine",
       "args": ["-test.run", "TestDrawCards|TestDiscardFromHand|TestAddCoins|TestAddBuys|TestAddActions|TestGainCard|TestEachOtherPlayer", "-test.v"],
-      "buildFlags": ["-gcflags", "all=-N -l"],
-      "substitutePath": [
-        {
-          "from": "${workspaceFolder}/dominion-grpc/.worktrees/tier1",
-          "to": "${workspaceFolder}/dominion-grpc"
-        }
-      ]
+      // "buildFlags": ["-gcflags", "all=-N -l"],
+      // "substitutePath": [
+      //   {
+      //     "from": "${workspaceFolder}/dominion-grpc/.worktrees/tier1",
+      //     "to": "${workspaceFolder}/dominion-grpc"
+      //   }
+      // ]
     },
     {
       "name": "Debug: TestMemory",
