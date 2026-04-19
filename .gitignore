@@ -21,4 +21,7 @@ go.tar.gz
 /.claude
 
 # Project repo (separate, independent git repo — never tracked from dev-env)
-/dominion-grpc/
+/dominion-grpc/.worktrees/
+
+# Worktrees (outer repo)
+.worktrees/
