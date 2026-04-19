@@ -12,7 +12,7 @@
 
 | Topic | Decision |
 |---|---|
-| **Kingdom selection shape** | Option C — `NewGame` takes a `kingdom []CardID` parameter; empty/nil → "all registered kingdom cards." `CreateGameRequest` gets an optional `kingdom_card_ids` field. |
+| **Kingdom selection shape** | Option C — `NewGame` takes a `kingdom []CardID` parameter; empty/nil → "all registered kingdom cards." `CreateGameRequest.kingdom` (proto field 3) is already defined from Tier 0 as forward-compat; Tier 1 just starts reading it. |
 | **Scope of this tier** | Cards + `EachOtherPlayer` + SmithyBM + done-criterion test + fix per-subscriber viewer fanout in service layer. Event-model evolution (typed deltas) deferred to a later tier. |
 | **Done-criterion test** | Statistical sweep: 200 games, threshold `smithyBM_wins / total >= 0.55`. Seats alternated each game to neutralize starting-player advantage. |
 | **SmithyBM — Smithy count cap** | 2 Smithys in the deck. |
@@ -34,7 +34,7 @@
    - Market (+1 card, +1 action, +1 buy, +1 coin)
    - Council Room (+4 cards, +1 buy, each other player draws 1)
 2. **One new engine primitive:** `EachOtherPlayer` (used by Council Room; Tier 3 attacks will also use it).
-3. **Optional kingdom selection:** `NewGame` accepts a `kingdom []CardID` parameter; empty = all registered kingdom cards. `CreateGameRequest` gets an optional `kingdom_card_ids` field (additive proto change).
+3. **Optional kingdom selection:** `NewGame` accepts a `kingdom []CardID` parameter; empty = all registered kingdom cards. The proto field `CreateGameRequest.kingdom` (field 3) already exists from Tier 0 as forward-compat — Tier 1 starts reading it.
 4. **SmithyBM strategy** with the locked behavior: play Smithy if hand has it and `Actions >= 1`; cap at 2 Smithys owned; no Smithy buys after the bot's 4th turn.
 5. **Per-subscriber viewer fanout fix** — the service layer tracks `viewer` per subscriber channel and sends a per-viewer scrubbed snapshot on every fanOut.
 6. **Done-criterion test:** a 200-game SmithyBM vs BigMoney sweep with threshold `smithyBM_wins / total >= 0.55`. Seats alternated by seed parity.
@@ -161,43 +161,35 @@ No central list of kingdom cards. `NewGame` discovers them by iterating `Default
 
 ## Section 4 — Proto changes
 
-One additive change to one message.
-
-### 4.1 `CreateGameRequest` — optional kingdom list
+**No new proto changes in Tier 1.** The `kingdom` field already exists on `CreateGameRequest` from the original Tier 0 proto PR as forward-compat:
 
 ```proto
 message CreateGameRequest {
-  repeated string players = 1;             // strategy identifiers
+  repeated string players = 1;  // strategy identifiers
   int64           seed    = 2;
-  repeated string kingdom_card_ids = 3;    // NEW — empty = server default
+  // If empty, Tier 0 default supply (basics only) is used.
+  repeated string kingdom = 3;
 }
 ```
 
-- Field 3 is optional (`repeated` is implicitly optional). Existing clients passing no field get the server default ("all registered kingdom cards").
-- Field numbers 1 and 2 unchanged → `buf breaking` passes.
-- Unknown card IDs → `InvalidArgument` Connect error.
+Tier 1 just starts **reading** this field in the service layer (Section 5.1) and plumbing it into `NewGame` (Section 2.2). The generated Go code already has `GetKingdom()` / `Kingdom` accessors.
 
-### 4.2 No changes elsewhere
-
-- `SubmitAction`, `StreamGameEvents`, `Action`, `StreamGameEventsResponse`, `PlayerView`, `GameStateSnapshot` — all unchanged.
+- Unknown card IDs → `InvalidArgument` Connect error (new validation logic, no proto change).
+- No other proto messages change.
 - Tier 1 cards produce no new event kinds; the existing snapshot-per-action model covers everything including Council Room's out-of-turn draws.
 - Prompt / Decision messages remain unused in Tier 1 (arrive in Tier 2).
-
-### 4.3 Regeneration
-
-`make generate` regenerates `gen/go/`. The regenerated Go code is committed alongside the `.proto` change, per the existing repo rule ("`buf generate` result is committed to git").
 
 ---
 
 ## Section 5 — Service-layer changes
 
-### 5.1 Plumb `kingdom_card_ids` into `NewGame`
+### 5.1 Plumb `kingdom` into `NewGame`
 
 In `CreateGame`:
 
 ```go
-kingdom := make([]engine.CardID, len(req.Msg.KingdomCardIds))
-for i, id := range req.Msg.KingdomCardIds {
+kingdom := make([]engine.CardID, len(req.Msg.Kingdom))
+for i, id := range req.Msg.Kingdom {
     kingdom[i] = engine.CardID(id)
 }
 s, err := engine.NewGame(id, names, kingdom, req.Msg.Seed, g.lookup)
@@ -437,28 +429,29 @@ No fixtures added in this tier. Format established in Tier 0; new replays are ca
 
 ## Section 8 — Work ordering & milestones
 
-Twelve reviewable units, each a separate PR closing one issue. Ordered so each PR lands with its own tests green on top of `main` without depending on unlanded work.
+Eleven reviewable units, each a separate PR closing one issue. Ordered so each PR lands with its own tests green on top of `main` without depending on unlanded work.
 
 ### Stage A — Infrastructure (unblocks the cards)
 
-1. **Proto: add `kingdom_card_ids` to `CreateGameRequest`.** Regenerate `gen/go/`. Pure additive — no code changes beyond regeneration. `buf breaking` passes.
-2. **Engine primitive: `EachOtherPlayer`.** Function + unit test. No consumers yet; fine to land alone.
-3. **Engine: `NewGame` kingdom parameter.** Add `kingdom []CardID` argument, default-when-empty behavior, validation. Existing single caller (`service.CreateGame`) passes `nil` — no behavior change. Unit tests cover default / explicit / unknown-ID / duplicates.
-4. **Service: plumb `kingdom_card_ids`.** Service reads the field and passes it through. Tests for default, explicit, and unknown-ID paths.
-5. **Service: per-subscriber viewer fanout.** The `subs` map refactor + per-viewer snapshot group. Dedicated test for two subscribers at different seats.
+1. **Engine primitive: `EachOtherPlayer`.** Function + unit test. No consumers yet; fine to land alone.
+2. **Engine: `NewGame` kingdom parameter.** Add `kingdom []CardID` argument, default-when-empty behavior, validation. Existing single caller (`service.CreateGame`) passes `nil` — no behavior change. Unit tests cover default / explicit / unknown-ID / duplicates.
+3. **Service: plumb `kingdom` field.** Service reads `req.Msg.Kingdom` and passes it through. Tests for default, explicit, and unknown-ID paths.
+4. **Service: per-subscriber viewer fanout.** The `subs` map refactor + per-viewer snapshot group. Dedicated test for two subscribers at different seats.
+
+(The original plan had a Task 1 for "add `kingdom_card_ids` proto field" — dropped because the `kingdom` field was already added in Tier 0 as forward-compat.)
 
 ### Stage B — The six cards (can land in any order once Stage A is in)
 
-6. Village — `kingdom_village.go` + tests.
-7. Smithy — `kingdom_smithy.go` + tests.
-8. Festival — `kingdom_festival.go` + tests.
-9. Laboratory — `kingdom_laboratory.go` + tests.
-10. Market — `kingdom_market.go` + tests.
-11. Council Room — `kingdom_council_room.go` + tests. Depends on #2 `EachOtherPlayer`.
+5. Village — `kingdom_village.go` + tests.
+6. Smithy — `kingdom_smithy.go` + tests.
+7. Festival — `kingdom_festival.go` + tests.
+8. Laboratory — `kingdom_laboratory.go` + tests.
+9. Market — `kingdom_market.go` + tests.
+10. Council Room — `kingdom_council_room.go` + tests. Depends on #1 `EachOtherPlayer`.
 
 ### Stage C — Strategy + sweep (needs cards + viewer fanout)
 
-12. **SmithyBM + `MyTurnsTaken` + integration sweep.** Single PR:
+11. **SmithyBM + `MyTurnsTaken` + integration sweep.** Single PR:
     - Add `MyTurnsTaken` to `ClientState` + reducer update + unit test.
     - Add `SmithyBM` strategy + unit tests (mock `ClientState`, assert picks).
     - Register in `StrategyByName`; wire through `cmd/bot/main.go`.
@@ -468,16 +461,16 @@ Twelve reviewable units, each a separate PR closing one issue. Ordered so each P
 
 Per Section 7B of the base spec:
 
-- Milestone **"Phase 1a / Tier 1 — Pure stat-boost actions"** — 12 issues (one per PR above). One epic issue tracks the whole tier.
+- Milestone **"Phase 1a / Tier 1 — Pure stat-boost actions"** — 11 issues (one per PR above). One epic issue tracks the whole tier.
 - Labels:
-  - PRs 1, 4, 5 → `area:server`
-  - PRs 2, 3 → `area:engine` + `kind:primitive`
-  - PRs 6–11 → `area:engine` + `kind:card`
-  - PR 12 → `area:bot`
+  - PRs 3, 4 → `area:server`
+  - PRs 1, 2 → `area:engine` + `kind:primitive`
+  - PRs 5–10 → `area:engine` + `kind:card`
+  - PR 11 → `area:bot`
 
 ### Milestone exit criteria
 
-- All 12 issues closed.
+- All 11 issues closed.
 - `go test ./...` green on `main`, including the 200-game SmithyBM sweep.
 - `make generate` and `make lint` clean.
 - README's "Quick start" snippet works with `-strategy smithy_bm`.
@@ -485,14 +478,13 @@ Per Section 7B of the base spec:
 ### Dependency graph
 
 ```
-#1 proto ────┐
-#2 EachOtherPlayer ─┐
-#3 NewGame kingdom ─┼── #4 service plumb
+#1 EachOtherPlayer ─┐
+#2 NewGame kingdom ─┼── #3 service plumb
                     │
-                    └── #6..#10 (5 stat cards; any order)
-                    └── #11 Council Room
-#5 viewer fanout ───┘
-                    └── #12 SmithyBM + sweep
+                    └── #5..#9 (5 stat cards; any order)
+                    └── #10 Council Room
+#4 viewer fanout ───┘
+                    └── #11 SmithyBM + sweep
 ```
 
 ---
