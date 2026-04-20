@@ -25,12 +25,20 @@
       "args": ["-test.run", "TestNewGame|TestIsKingdom", "-test.v"],
     },
     {
-      "name": "Debug: TestMemory",
+      "name": "Debug: game_service_test.go (all tests)",
       "type": "go",
       "request": "launch",
       "mode": "test",
-      "program": "${workspaceFolder}/dominion-grpc/internal/store",
-      "args": ["-test.run", "TestMemory", "-test.v"]
+      "program": "${workspaceFolder}/dominion-grpc/internal/service",
+      "args": ["-test.run", "TestGameService|", "-test.v"]
+    },
+    {
+      "name": "Debug: integration_test.go (all tests)",
+      "type": "go",
+      "request": "launch",
+      "mode": "test",
+      "program": "${workspaceFolder}/dominion-grpc/internal/bot",
+      "args": ["-test.run", "TestBotVsBot|", "-test.v"]
     },
     {
       "name": "Debug: TestActionFromProto",
@@ -41,20 +49,20 @@
       "args": ["-test.run", "TestActionFromProto", "-test.v"]
     },
     {
+      "name": "Debug: TestMemory",
+      "type": "go",
+      "request": "launch",
+      "mode": "test",
+      "program": "${workspaceFolder}/dominion-grpc/internal/store",
+      "args": ["-test.run", "TestMemory", "-test.v"]
+    },
+    {
       "name": "Debug: TestSnapshotFromState",
       "type": "go",
       "request": "launch",
       "mode": "test",
       "program": "${workspaceFolder}/dominion-grpc/internal/service",
       "args": ["-test.run", "TestSnapshotFromState", "-test.v"]
-    },
-    {
-      "name": "Debug: TestGameService",
-      "type": "go",
-      "request": "launch",
-      "mode": "test",
-      "program": "${workspaceFolder}/dominion-grpc/internal/service",
-      "args": ["-test.run", "TestGameService", "-test.v"]
     },
     {
       "name": "Debug: TestEachOtherPlayer",
