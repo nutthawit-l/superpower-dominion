@@ -30,7 +30,7 @@
       "request": "launch",
       "mode": "test",
       "program": "${workspaceFolder}/dominion-grpc/internal/service",
-      "args": ["-test.run", "TestGameService|", "-test.v"]
+      "args": ["-test.run", "TestGameService|TestStreamGameEvents", "-test.v"]
     },
     {
       "name": "Debug: integration_test.go (all tests)",
