@@ -17,6 +17,14 @@
       // ]
     },
     {
+      "name": "Debug: newgame_test.go (all tests)",
+      "type": "go",
+      "request": "launch",
+      "mode": "test",
+      "program": "${workspaceFolder}/dominion-grpc/internal/engine",
+      "args": ["-test.run", "TestNewGame|TestIsKingdom", "-test.v"],
+    },
+    {
       "name": "Debug: TestMemory",
       "type": "go",
       "request": "launch",
