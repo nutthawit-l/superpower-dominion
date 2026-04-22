@@ -1,0 +1,16 @@
+{
+    // General
+    "workbench.startupEditor": "none",
+    "workbench.colorTheme": "Solarized Light",
+    "explorer.confirmDragAndDrop": false,
+
+    // Claude
+    "claudeCode.preferredLocation": "panel",
+
+    // Git
+    "git.confirmSync": false,
+
+    // Terminal
+    "terminal.integrated.mouseWheelScrollSensitivity": 3,
+    "terminal.integrated.defaultLocation": "editor"
+}

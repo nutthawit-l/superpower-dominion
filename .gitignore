@@ -1,11 +1,10 @@
-# Distrobox ignore
+# Home directory
 .sudo_as_admin_successful
+.gnupg
 .wget-hsts
+.bash_profile
 /.cache
-/.config
 /.pki
-/.vscode/*
-!/.vscode/launch.json
 /.ssh
 /.local
 .bash_history
@@ -13,15 +12,28 @@
 /.gitconfig
 /.profile
 /.bash_logout
-go.tar.gz
-/go
+
+# VSCode
+/.vscode/*
+
+# Ignore everything inside the .config directory
+.config/*
+# But allow the Code subdirectory to be tracked
+!.config/Code
+# Ignore everything inside Code except the User subdirectory
+.config/Code/*
+!.config/Code/User
+# Ignore everything inside User except the two specific JSON files
+.config/Code/User/*
+!.config/Code/User/settings.json
+!.config/Code/User/keybindings.json
 
 # Claude
 .claude.json
 /.claude
-
-# Project repo (separate, independent git repo — never tracked from dev-env)
-/dominion-grpc/.worktrees/
-
-# Worktrees (outer repo)
 .worktrees/
+
+# Your project specific
+go.tar.gz
+/go
+/dominion-grpc/*
