@@ -30,8 +30,9 @@
 
 # Claude
 .claude.json
-/.claude
-.worktrees/
+/.claude/*
+!/.claude/settings.json
+!/.claude/statusline-command.sh
 
 # Your project specific
 go.tar.gz
