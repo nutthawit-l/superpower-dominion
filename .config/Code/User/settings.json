@@ -12,5 +12,6 @@
 
     // Terminal
     "terminal.integrated.mouseWheelScrollSensitivity": 3,
-    "terminal.integrated.defaultLocation": "editor"
+    "terminal.integrated.defaultLocation": "editor",
+    "security.workspace.trust.untrustedFiles": "open"
 }
