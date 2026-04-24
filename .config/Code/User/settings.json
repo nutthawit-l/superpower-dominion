@@ -3,14 +3,18 @@
     "workbench.startupEditor": "none",
     "workbench.colorTheme": "Solarized Light",
     "explorer.confirmDragAndDrop": false,
+    "workbench.panel.defaultLocation": "right",
 
     // Claude
     "claudeCode.preferredLocation": "panel",
 
     // Git
     "git.confirmSync": false,
+    "diffEditor.renderSideBySide": false,
+
+    // Keyboard
+    "keyboard.dispatch": "keyCode",
 
     // Terminal
-    "terminal.integrated.mouseWheelScrollSensitivity": 3,
-    "workbench.panel.defaultLocation": "right",
+    "terminal.integrated.mouseWheelScrollSensitivity": 3
 }
