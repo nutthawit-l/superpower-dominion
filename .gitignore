@@ -37,4 +37,4 @@
 # Your project specific
 go.tar.gz
 /go
-/dominion-grpc/*
+/dominion-grpc
