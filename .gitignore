@@ -38,3 +38,5 @@
 go.tar.gz
 /go
 /dominion-grpc
+.npm/
+.pnpm-store/
