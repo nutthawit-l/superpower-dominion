@@ -34,6 +34,10 @@
 !/.claude/settings.json
 !/.claude/statusline-command.sh
 
+# Antigravity
+.antigravity/
+.gemini/
+
 # Your project specific
 go.tar.gz
 /go
